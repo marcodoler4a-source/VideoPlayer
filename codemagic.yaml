@@ -1,0 +1,122 @@
+workflows:
+  ios-workflow:
+    name: Video Player iOS
+    max_build_duration: 60
+
+    environment:
+      xcode: latest
+
+    scripts:
+      - name: Verify Xcode project
+        script: |
+          set -e
+          
+          echo "=== Repository contents ==="
+          find . -maxdepth 4 -type f | sort
+          
+          echo "=== Available schemes ==="
+          xcodebuild \
+            -project VideoPlayer.xcodeproj \
+            -list
+
+      - name: Build VideoPlayer
+        script: |
+          set -e
+          
+          rm -rf "$CM_BUILD_DIR/build"
+          mkdir -p "$CM_BUILD_DIR/build"
+          
+          xcodebuild \
+            -project "$CM_BUILD_DIR/VideoPlayer.xcodeproj" \
+            -scheme VideoPlayer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$CM_BUILD_DIR/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Create unsigned IPA
+        script: |
+          set -e
+          
+          echo "=== Looking for compiled VideoPlayer.app ==="
+          
+          APP_PATH=$(find "$CM_BUILD_DIR/build/DerivedData/Build/Products" \
+            -type d \
+            -name "VideoPlayer.app" \
+            | head -1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: VideoPlayer.app was not generated."
+            echo "Available build products:"
+            find "$CM_BUILD_DIR/build/DerivedData/Build/Products" -maxdepth 5 -print
+            exit 1
+          fi
+          
+          echo "Found app:"
+          echo "$APP_PATH"
+          
+          EXECUTABLE="$APP_PATH/VideoPlayer"
+          
+          if [ ! -f "$EXECUTABLE" ]; then
+            echo "ERROR: VideoPlayer executable is missing."
+            find "$APP_PATH" -maxdepth 2 -print
+            exit 1
+          fi
+          
+          echo "=== VideoPlayer.app contents ==="
+          ls -lah "$APP_PATH"
+          
+          rm -rf "$CM_BUILD_DIR/build/ipa"
+          mkdir -p "$CM_BUILD_DIR/build/ipa/Payload"
+          
+          cp -R "$APP_PATH" \
+            "$CM_BUILD_DIR/build/ipa/Payload/VideoPlayer.app"
+          
+          cd "$CM_BUILD_DIR/build/ipa"
+          
+          /usr/bin/zip -qry \
+            "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" \
+            Payload
+          
+          echo "=== IPA created ==="
+          ls -lh "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa"
+          
+          echo "=== IPA contents ==="
+          unzip -l "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" | head -100
+
+          echo "=== Full ZIP integrity test ==="
+          unzip -t "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa"
+
+          if ! unzip -l "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" \
+            | grep -q "Payload/VideoPlayer.app/VideoPlayer"; then
+            echo "ERROR: IPA does not contain the VideoPlayer executable."
+            exit 1
+          fi
+
+          if ! unzip -l "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" \
+            | grep -q "Payload/VideoPlayer.app/Info.plist"; then
+            echo "ERROR: IPA does not contain Info.plist."
+            exit 1
+          fi
+
+          echo "=== Validate built Info.plist ==="
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundlePackageType" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PATH/Info.plist"
+
+          echo "=== Validate executable ==="
+          file "$EXECUTABLE"
+          file "$EXECUTABLE" | grep -q "arm64"
+
+          echo "=== IPA checksum ==="
+          shasum -a 256 "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa"
+
+          echo "SUCCESS: IPA passed package, plist, executable, architecture, and ZIP integrity checks."
+
+    artifacts:
+      - build/VideoPlayer-unsigned.ipa
