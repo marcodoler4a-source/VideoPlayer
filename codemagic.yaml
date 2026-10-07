@@ -2,14 +2,98 @@ workflows:
   ios-workflow:
     name: Video Player iOS
     max_build_duration: 60
+
     environment:
       xcode: latest
+
     scripts:
-      - name: Build unsigned IPA
+      - name: Verify Xcode project
         script: |
-          xcodebuild -project VideoPlayer.xcodeproj -scheme VideoPlayer -configuration Release -sdk iphoneos -archivePath build/VideoPlayer.xcarchive CODE_SIGNING_ALLOWED=NO archive
-          mkdir -p build/Payload
-          cp -R build/VideoPlayer.xcarchive/Products/Applications/VideoPlayer.app build/Payload/
-          cd build && zip -r VideoPlayer-unsigned.ipa Payload
+          set -e
+          
+          echo "=== Repository contents ==="
+          find . -maxdepth 4 -type f | sort
+          
+          echo "=== Available schemes ==="
+          xcodebuild \
+            -project VideoPlayer.xcodeproj \
+            -list
+
+      - name: Build VideoPlayer
+        script: |
+          set -e
+          
+          rm -rf "$CM_BUILD_DIR/build"
+          mkdir -p "$CM_BUILD_DIR/build"
+          
+          xcodebuild \
+            -project "$CM_BUILD_DIR/VideoPlayer.xcodeproj" \
+            -scheme VideoPlayer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$CM_BUILD_DIR/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Create unsigned IPA
+        script: |
+          set -e
+          
+          echo "=== Looking for compiled VideoPlayer.app ==="
+          
+          APP_PATH=$(find "$CM_BUILD_DIR/build/DerivedData/Build/Products" \
+            -type d \
+            -name "VideoPlayer.app" \
+            | head -1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: VideoPlayer.app was not generated."
+            echo "Available build products:"
+            find "$CM_BUILD_DIR/build/DerivedData/Build/Products" -maxdepth 5 -print
+            exit 1
+          fi
+          
+          echo "Found app:"
+          echo "$APP_PATH"
+          
+          EXECUTABLE="$APP_PATH/VideoPlayer"
+          
+          if [ ! -f "$EXECUTABLE" ]; then
+            echo "ERROR: VideoPlayer executable is missing."
+            find "$APP_PATH" -maxdepth 2 -print
+            exit 1
+          fi
+          
+          echo "=== VideoPlayer.app contents ==="
+          ls -lah "$APP_PATH"
+          
+          rm -rf "$CM_BUILD_DIR/build/ipa"
+          mkdir -p "$CM_BUILD_DIR/build/ipa/Payload"
+          
+          cp -R "$APP_PATH" \
+            "$CM_BUILD_DIR/build/ipa/Payload/VideoPlayer.app"
+          
+          cd "$CM_BUILD_DIR/build/ipa"
+          
+          /usr/bin/zip -qry \
+            "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" \
+            Payload
+          
+          echo "=== IPA created ==="
+          ls -lh "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa"
+          
+          echo "=== IPA contents ==="
+          unzip -l "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" | head -100
+          
+          if ! unzip -l "$CM_BUILD_DIR/build/VideoPlayer-unsigned.ipa" \
+            | grep -q "Payload/VideoPlayer.app/VideoPlayer"; then
+            echo "ERROR: IPA does not contain the VideoPlayer executable."
+            exit 1
+          fi
+          
+          echo "SUCCESS: Valid unsigned IPA package created."
+
     artifacts:
-      - build/*.ipa
+      - build/VideoPlayer-unsigned.ipa
