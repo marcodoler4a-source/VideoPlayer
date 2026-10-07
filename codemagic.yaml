@@ -1,0 +1,15 @@
+workflows:
+  ios-workflow:
+    name: Video Player iOS
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Build unsigned IPA
+        script: |
+          xcodebuild -project VideoPlayer.xcodeproj -scheme VideoPlayer -configuration Release -sdk iphoneos -archivePath build/VideoPlayer.xcarchive CODE_SIGNING_ALLOWED=NO archive
+          mkdir -p build/Payload
+          cp -R build/VideoPlayer.xcarchive/Products/Applications/VideoPlayer.app build/Payload/
+          cd build && zip -r VideoPlayer-unsigned.ipa Payload
+    artifacts:
+      - build/*.ipa
