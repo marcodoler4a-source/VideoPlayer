@@ -372,6 +372,23 @@ enum LibraryTab: Hashable { case recent, library, download, settings }
 struct ContentView: View {
   @StateObject private var library = VideoLibrary()
   @State private var tab: LibraryTab = .recent
+  @AppStorage("playerSkipSeconds") private var skipSeconds = 10.0
+  @AppStorage("playerSubtitleSize") private var subtitleSize = 20.0
+  @AppStorage("playerSubtitleDelay") private var subtitleDelay = 0.0
+  @AppStorage("videoFavorites") private var favoriteData = Data()
+  @State private var librarySearch = ""
+  @State private var librarySort = 0
+  @State private var favoritesOnly = false
+  @AppStorage("libraryGridView") private var libraryGridView = false
+  @AppStorage("cinemaAccent") private var cinemaAccent = 0
+  @AppStorage("cinemaAppearance") private var cinemaAppearance = 0
+  private var accent: Color { cinemaAccent == 1 ? .cyan : (cinemaAccent == 2 ? .indigo : .blue) }
+  private var favoriteIDs: Set<String> { Set((try? JSONDecoder().decode([String].self, from: favoriteData)) ?? []) }
+  private func toggleFavorite(_ item: VideoItem) {
+    var ids = favoriteIDs
+    if ids.contains(item.id.uuidString) { ids.remove(item.id.uuidString) } else { ids.insert(item.id.uuidString) }
+    favoriteData = (try? JSONEncoder().encode(Array(ids))) ?? Data()
+  }
   @State private var importing = false
   @State private var showingPhotos = false
   @State private var showImportSources = false
@@ -388,8 +405,8 @@ struct ContentView: View {
 
   var body: some View {
     TabView(selection: $tab) {
-      NavigationStack { libraryPage(recentOnly: true).navigationTitle("Recent") }.tabItem {
-        Label("Recent", systemImage: "clock")
+      NavigationStack { homePage.navigationTitle("Home") }.tabItem {
+        Label("Home", systemImage: "house.fill")
       }.tag(LibraryTab.recent)
       NavigationStack { libraryPage(recentOnly: false).navigationTitle("Library") }.tabItem {
         Label("Library", systemImage: "play.rectangle.on.rectangle")
@@ -398,9 +415,11 @@ struct ContentView: View {
         Label("Download", systemImage: "arrow.down.circle")
       }.tag(LibraryTab.download)
       NavigationStack { settingsView.navigationTitle("Settings") }.tabItem {
-        Label("Settings", systemImage: "gearshape")
+        Label("More", systemImage: "square.grid.2x2")
       }.tag(LibraryTab.settings)
     }
+    .tint(accent)
+    .preferredColorScheme(cinemaAppearance == 1 ? .light : (cinemaAppearance == 2 ? nil : .dark))
     .fileImporter(
       isPresented: $importing, allowedContentTypes: [.movie, .video, .mpeg4Movie], allowsMultipleSelection: false
     ) { result in
@@ -480,26 +499,117 @@ struct ContentView: View {
     }
   }
 
+  private var homePage: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 24) {
+        HStack {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Your personal cinema").font(.subheadline).foregroundStyle(.secondary)
+            Text("Ready to watch").font(.largeTitle.bold())
+          }
+          Spacer()
+          Button { showImportSources = true } label: {
+            Image(systemName: "plus").font(.title3.weight(.semibold))
+              .frame(width: 48, height: 48).background(.blue.opacity(0.15), in: Circle())
+          }.accessibilityLabel("Import videos")
+        }
+        let continuing = library.items.filter { $0.lastPosition > 5 && $0.duration > 0 && $0.lastPosition < $0.duration - 10 }
+        if !continuing.isEmpty {
+          Text("Continue Watching").font(.title2.bold())
+          ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+              ForEach(continuing.prefix(12)) { item in
+                Button { selected = item } label: {
+                  VStack(alignment: .leading, spacing: 7) {
+                    VideoThumbnail(url: library.url(for: item))
+                      .frame(width: 230, height: 130).clipShape(RoundedRectangle(cornerRadius: 14))
+                    Text(item.fileName).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    ProgressView(value: min(item.lastPosition / max(item.duration, 1), 1))
+                  }.frame(width: 230, alignment: .leading)
+                }.buttonStyle(.plain)
+              }
+            }
+          }
+        }
+        HStack {
+          Text("Recently Added").font(.title2.bold())
+          Spacer()
+          Button("See All") { tab = .library }.font(.subheadline)
+        }
+        if library.items.isEmpty { emptyView }
+        else { LazyVStack(spacing: 10) { ForEach(library.items.prefix(12)) { videoRow($0) } } }
+      }.padding(18)
+    }.background(Color(uiColor: .systemGroupedBackground))
+  }
+
+  private var sortedLibraryItems: [VideoItem] {
+    let filtered = library.items.filter { item in
+      (!favoritesOnly || favoriteIDs.contains(item.id.uuidString)) &&
+      (librarySearch.isEmpty || item.fileName.localizedCaseInsensitiveContains(librarySearch))
+    }
+    switch librarySort {
+    case 1: return filtered.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+    case 2: return filtered.sorted { $0.duration > $1.duration }
+    default: return filtered.sorted { $0.addedAt > $1.addedAt }
+    }
+  }
+
   @ViewBuilder private func libraryPage(recentOnly: Bool) -> some View {
-    let displayItems = recentOnly ? Array(library.items.prefix(20)) : library.items
     Group {
-      if displayItems.isEmpty {
-        emptyView
+      if libraryGridView {
+        ScrollView {
+          LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
+            ForEach(sortedLibraryItems) { item in
+              Button { selected = item } label: {
+                VStack(alignment: .leading, spacing: 7) {
+                  VideoThumbnail(url: library.url(for: item))
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 13))
+                  Text(item.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
+                  Text(format(item.duration)).font(.caption).foregroundStyle(.secondary)
+                  if item.lastPosition > 1 && item.duration > 0 {
+                    ProgressView(value: min(item.lastPosition / item.duration, 1))
+                  }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+              }.buttonStyle(.plain).contextMenu {
+                Button { toggleFavorite(item) } label: {
+                  Label(favoriteIDs.contains(item.id.uuidString) ? "Remove Favorite" : "Add Favorite", systemImage: "heart")
+                }
+                ShareLink(item: library.url(for: item)) { Label("Share", systemImage: "square.and.arrow.up") }
+                Button(role: .destructive) { library.delete(item) } label: { Label("Delete", systemImage: "trash") }
+              }
+            }
+          }.padding(16)
+          if sortedLibraryItems.isEmpty { VStack(spacing: 10) { Image(systemName: "play.rectangle").font(.largeTitle); Text("No Videos").font(.headline); Text("Import a video or change your search.").font(.caption) }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(30) }
+        }
       } else {
         List {
-          ForEach(displayItems) { item in videoRow(item) }.onDelete { offsets in
-            if !recentOnly { library.delete(at: offsets) }
-          }
+          if sortedLibraryItems.isEmpty {
+            Text(library.items.isEmpty ? "Import videos to start your library." : "No matching videos.").foregroundStyle(.secondary)
+          } else { ForEach(sortedLibraryItems) { item in videoRow(item) } }
         }
       }
     }
+    .searchable(text: $librarySearch, prompt: "Search videos")
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        Button {
-          showImportSources = true
-        } label: {
-          Image(systemName: "plus")
-        }.disabled(isImportingVideo)
+      ToolbarItem(placement: .topBarLeading) {
+        Button { favoritesOnly.toggle() } label: {
+          Image(systemName: favoritesOnly ? "heart.fill" : "heart")
+        }.accessibilityLabel("Show favorites")
+      }
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        Button { libraryGridView.toggle() } label: {
+          Image(systemName: libraryGridView ? "list.bullet" : "square.grid.2x2")
+        }.accessibilityLabel(libraryGridView ? "List view" : "Grid view")
+        Menu {
+          Picker("Sort Videos", selection: $librarySort) {
+            Text("Recently Added").tag(0)
+            Text("Name").tag(1)
+            Text("Longest First").tag(2)
+          }
+        } label: { Image(systemName: "arrow.up.arrow.down") }
+        Button { showImportSources = true } label: { Image(systemName: "plus") }
+          .disabled(isImportingVideo)
       }
     }
   }
@@ -533,6 +643,9 @@ struct ContentView: View {
           selected = item
         } label: {
           Label("Edit Video", systemImage: "slider.horizontal.3")
+        }
+        Button { toggleFavorite(item) } label: {
+          Label(favoriteIDs.contains(item.id.uuidString) ? "Remove Favorite" : "Add to Favorites", systemImage: "heart")
         }
         Button {
           convertToMP3(item)
@@ -690,9 +803,34 @@ struct ContentView: View {
 
   private var settingsView: some View {
     Form {
+      Section("Appearance") {
+        Picker("Theme", selection: $cinemaAppearance) {
+          Text("Cinema Dark").tag(0)
+          Text("Light").tag(1)
+          Text("System").tag(2)
+        }
+        Picker("Accent", selection: $cinemaAccent) {
+          Text("Blue").tag(0)
+          Text("Cyan").tag(1)
+          Text("Indigo").tag(2)
+        }
+        Toggle("Grid Library", isOn: $libraryGridView)
+      }
       Section("Playback") {
         Toggle("Auto Play", isOn: $autoPlay)
         Toggle("Remember Playback Position", isOn: $rememberPosition)
+        Picker("Skip Interval", selection: $skipSeconds) {
+          Text("5 seconds").tag(5.0)
+          Text("10 seconds").tag(10.0)
+          Text("15 seconds").tag(15.0)
+          Text("30 seconds").tag(30.0)
+        }
+      }
+      Section("Subtitles") {
+        Slider(value: $subtitleSize, in: 14...32, step: 2)
+        LabeledContent("Font Size", value: "\(Int(subtitleSize)) pt")
+        Slider(value: $subtitleDelay, in: -5...5, step: 0.5)
+        LabeledContent("Subtitle Delay", value: String(format: "%+.1f s", subtitleDelay))
       }
 
       Section("Library") {
@@ -709,6 +847,18 @@ struct ContentView: View {
         .foregroundStyle(.secondary)
       }
 
+      Section("Tools") {
+        Text("Use the menu beside a video to edit, convert to MP3, share, or delete it.")
+          .font(.footnote).foregroundStyle(.secondary)
+        if let generatedAudioURL { ShareLink(item: generatedAudioURL) { Label("Share Last MP3", systemImage: "waveform") } }
+      }
+      Section("Performance") {
+        Button { ThumbnailStore.shared.clearCache() } label: {
+          Label("Clear Thumbnail Cache", systemImage: "trash.slash")
+        }
+        Text("Thumbnails are cached for smoother scrolling. Clearing the cache does not delete videos.")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
       Section("About") {
         LabeledContent("App", value: "Video Player")
         LabeledContent("Version", value: "1.1")
@@ -723,25 +873,75 @@ struct ContentView: View {
   }
 }
 
+@MainActor
+final class ThumbnailStore {
+  static let shared = ThumbnailStore()
+  private let cache = NSCache<NSString, UIImage>()
+  private var requests: [String: Task<UIImage?, Never>] = [:]
+  private init() { cache.countLimit = 160; cache.totalCostLimit = 80 * 1024 * 1024 }
+  private var diskFolder: URL {
+    let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("VideoThumbnails", isDirectory: true)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    return folder
+  }
+  func clearCache() {
+    cache.removeAllObjects()
+    try? FileManager.default.removeItem(at: diskFolder)
+  }
+  private func diskURL(for url: URL) -> URL {
+    // Imported video names are UUIDs, so they are safe, stable cache keys.
+    diskFolder.appendingPathComponent(url.lastPathComponent + ".jpg")
+  }
+
+  func thumbnail(for url: URL) async -> UIImage? {
+    let key = url.path
+    if let existing = cache.object(forKey: key as NSString) { return existing }
+    let cachedFile = diskURL(for: url)
+    if let diskImage = UIImage(contentsOfFile: cachedFile.path) {
+      cache.setObject(diskImage, forKey: key as NSString)
+      return diskImage
+    }
+    if let request = requests[key] { return await request.value }
+    let request = Task.detached(priority: .utility) { () -> UIImage? in
+      let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+      generator.appliesPreferredTrackTransform = true
+      generator.maximumSize = CGSize(width: 480, height: 300)
+      generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
+      generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+      defer { generator.cancelAllCGImageGeneration() }
+      if let cg = try? generator.copyCGImage(at: CMTime(seconds: 0.5, preferredTimescale: 600), actualTime: nil) {
+        return UIImage(cgImage: cg)
+      }
+      if let cg = try? generator.copyCGImage(at: .zero, actualTime: nil) {
+        return UIImage(cgImage: cg)
+      }
+      return nil
+    }
+    requests[key] = request
+    let image = await request.value
+    requests[key] = nil
+    if let image {
+      cache.setObject(image, forKey: key as NSString, cost: Int(image.size.width * image.size.height * 4))
+      if let jpeg = image.jpegData(compressionQuality: 0.72) {
+        let destination = diskURL(for: url)
+        Task.detached(priority: .utility) { try? jpeg.write(to: destination, options: .atomic) }
+      }
+    }
+    return image
+  }
+}
+
 struct VideoThumbnail: View {
   let url: URL
   @State private var image: UIImage?
   var body: some View {
     ZStack {
-      Rectangle().fill(.black.opacity(0.85))
-      if let image {
-        Image(uiImage: image).resizable().scaledToFill()
-      } else {
-        Image(systemName: "play.fill").foregroundStyle(.white)
-      }
-    }.clipped().task {
-      let g = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-      g.appliesPreferredTrackTransform = true
-      if let cg = try? g.copyCGImage(
-        at: CMTime(seconds: 1, preferredTimescale: 600), actualTime: nil)
-      {
-        image = UIImage(cgImage: cg)
-      }
+      Rectangle().fill(Color(uiColor: .secondarySystemGroupedBackground))
+      if let image { Image(uiImage: image).resizable().scaledToFill() }
+      else { Image(systemName: "play.rectangle.fill").font(.title2).foregroundStyle(.secondary) }
     }
+    .clipped()
+    .task(id: url) { image = await ThumbnailStore.shared.thumbnail(for: url) }
   }
 }

@@ -148,6 +148,9 @@ struct PlayerScreen: View {
   @State private var fillVideo = false
   @State private var showEditor = false
   @State private var hideToolsTask: Task<Void, Never>?
+  @AppStorage("playerSkipSeconds") private var skipSeconds = 10.0
+  @AppStorage("playerSubtitleSize") private var subtitleSize = 20.0
+  @AppStorage("playerSubtitleDelay") private var subtitleDelay = 0.0
 
   init(item: VideoItem, url: URL, autoPlay: Bool = true, onClose: @escaping (Double) -> Void) {
     self.item = item
@@ -169,7 +172,7 @@ struct PlayerScreen: View {
         VStack {
           Spacer()
           Text(cue.text)
-            .font(.title3.weight(.semibold))
+            .font(.system(size: subtitleSize, weight: .semibold))
             .multilineTextAlignment(.center)
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
@@ -217,14 +220,41 @@ struct PlayerScreen: View {
     }
   }
 
+  // Lightweight chrome sits above the native AVPlayerViewController controls.
+  // The native transport bar remains responsible for play/pause, scrubbing and PiP.
   private var controlsView: some View {
-    VStack {
-      // No custom close button here. AVPlayerViewController owns the native
-      // playback chrome, preventing a duplicate X at the top of the player.
-      Spacer()
-
-      HStack {
-        Spacer()
+    VStack(spacing: 0) {
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text(itemTitle)
+            .font(.system(size: 17, weight: .semibold))
+            .lineLimit(1)
+          Text("NOW PLAYING  •  \(format(current)) / \(format(duration))")
+            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .tracking(0.8)
+            .foregroundStyle(.white.opacity(0.72))
+        }
+        Spacer(minLength: 8)
+        Button { seek(by: -skipSeconds); scheduleToolsAutoHide() } label: {
+          Image(systemName: "gobackward.10")
+            .font(.system(size: 17, weight: .semibold))
+            .frame(width: 36, height: 36)
+            .background(.ultraThinMaterial, in: Circle())
+        }
+        Menu {
+          ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { speed in
+            Button { setPlaybackSpeed(Float(speed)) } label: {
+              if abs(Double(rate) - speed) < 0.01 {
+                Label("\(speed.formatted())×", systemImage: "checkmark")
+              } else { Text("\(speed.formatted())×") }
+            }
+          }
+        } label: {
+          Text("\(Double(rate).formatted())×")
+            .font(.system(size: 13, weight: .bold, design: .rounded))
+            .padding(.horizontal, 12).frame(height: 36)
+            .background(.ultraThinMaterial, in: Capsule())
+        }
         Menu {
           Section("Subtitles") {
             Button { importingSubtitle = true } label: {
@@ -256,6 +286,8 @@ struct PlayerScreen: View {
           }
 
           Section("Playback") {
+            Button { seek(by: -skipSeconds) } label: { Label("Back \(Int(skipSeconds)) seconds", systemImage: "gobackward") }
+            Button { seek(by: skipSeconds) } label: { Label("Forward \(Int(skipSeconds)) seconds", systemImage: "goforward") }
             Menu("Playback Speed") {
               ForEach([0.5, 0.75, 1, 1.25, 1.5, 2], id: \.self) { speed in
                 Button("\(speed, specifier: "%g")×") {
@@ -289,10 +321,28 @@ struct PlayerScreen: View {
             .background(.ultraThinMaterial, in: Circle())
         }
       }
-      .padding(.trailing, 12)
-      .padding(.bottom, 120)
+      .padding(.horizontal, 16)
+      .padding(.top, 12)
+      .padding(.bottom, 14)
+      .background {
+        LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+          .ignoresSafeArea(edges: .top)
+      }
+      Spacer()
+
     }
     .foregroundStyle(.white)
+  }
+
+  private var itemTitle: String {
+    let title = url.deletingPathExtension().lastPathComponent
+    return title.isEmpty ? "Video" : title.replacingOccurrences(of: "_", with: " ")
+  }
+
+  private func setPlaybackSpeed(_ speed: Float) {
+    rate = speed
+    if player.timeControlStatus == .playing { player.rate = speed }
+    scheduleToolsAutoHide()
   }
 
   private func toolIcon(_ systemName: String) -> some View {
@@ -308,7 +358,18 @@ struct PlayerScreen: View {
   }
 
   private var activeSubtitle: SubtitleCue? {
-    subtitleCues.first { current >= $0.start && current <= $0.end }
+    // Binary search keeps subtitle lookup fast even for long films.
+    let target = current - subtitleDelay
+    var low = 0
+    var high = subtitleCues.count
+    while low < high {
+      let middle = (low + high) / 2
+      if subtitleCues[middle].start <= target { low = middle + 1 }
+      else { high = middle }
+    }
+    guard low > 0 else { return nil }
+    let cue = subtitleCues[low - 1]
+    return target <= cue.end ? cue : nil
   }
   private func loadSubtitle(from source: URL) {
     let access = source.startAccessingSecurityScopedResource()
@@ -318,7 +379,7 @@ struct PlayerScreen: View {
       String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) ?? ""
     let parsed = SRTParser.parse(text)
     guard !parsed.isEmpty else { return }
-    subtitleCues = parsed
+    subtitleCues = parsed.sorted { $0.start < $1.start }
     subtitleName = source.lastPathComponent
     subtitlesEnabled = true
   }
@@ -338,7 +399,7 @@ struct PlayerScreen: View {
       }
     }
     observer = player.addPeriodicTimeObserver(
-      forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main
+      forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main
     ) { time in current = time.seconds.isFinite ? time.seconds : 0 }
     player.volume = Float(volume)
     if autoPlay {
@@ -358,10 +419,10 @@ struct PlayerScreen: View {
   }
   private func seek(by delta: Double) {
     let t = min(max(current + delta, 0), duration)
-    player.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+    player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    current = t
   }
   private func close() {
-    onClose(current)
     player.pause()
     requestOrientation(.portrait)
     dismiss()
@@ -373,6 +434,7 @@ struct PlayerScreen: View {
       player.removeTimeObserver(observer)
       self.observer = nil
     }
+    player.replaceCurrentItem(with: nil)
   }
   private func format(_ seconds: Double) -> String {
     let s = max(Int(seconds), 0)
