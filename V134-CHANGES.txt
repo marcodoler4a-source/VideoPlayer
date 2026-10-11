@@ -1,0 +1,6 @@
+V134 Video Player control layout repair
+- Prevents duplicated native/custom AVPlayer control overlays.
+- Adds a dedicated top title/close/speed/more bar below the iPhone status area.
+- Uses custom center skip/play controls and bottom seek slider/times.
+- Keeps subtitle import, video display settings, editing, playback speed, and AVPlayer PiP configuration.
+- On-device Codemagic build and iPhone testing required.

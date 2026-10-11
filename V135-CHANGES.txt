@@ -1,0 +1,13 @@
+Video Player V135 — Native iPhone Controls
+
+- Re-enabled AVPlayerViewController native playback controls and PiP.
+- Removed custom Play/Pause, skip, timeline, speed and volume interfaces.
+- Preserved video editor and imported SRT subtitle features.
+- Kept app-specific display, rotation and subtitle options in a Video Tools sheet.
+- Added a separate Done action to close the player.
+- Disabled player pinch scaling so it cannot distort native playback controls.
+
+Main changed file: VideoPlayer/PlayerScreen.swift
+
+The project archive has been checked for integrity. Xcode compilation and iPhone
+runtime behavior cannot be verified in this environment.
