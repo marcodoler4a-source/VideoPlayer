@@ -874,7 +874,7 @@ struct VideoEditorView: View {
             textLayer.foregroundColor = [UIColor.white, .yellow, .cyan, .black][min(max(overlayColor, 0), 3)].cgColor
             textLayer.backgroundColor = UIColor.black.withAlphaComponent(0.25).cgColor
             textLayer.alignmentMode = .center
-            textLayer.wrapped = true
+           textLayer.isWrapped = true
             textLayer.fontSize = CGFloat(overlaySize)
             textLayer.contentsScale = UIScreen.main.scale
             textLayer.frame = CGRect(x: 20,
