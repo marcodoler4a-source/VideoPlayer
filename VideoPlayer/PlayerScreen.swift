@@ -144,7 +144,7 @@ struct PlayerScreen: View {
   @State private var fillVideo = false
   @State private var showEditor = false
   @State private var showTools = false
-  @State private var toolsVisible = true
+  @State private var toolsVisible = false
   @State private var toolsVisibilityTask: Task<Void, Never>?
   @AppStorage("playerSubtitleSize") private var subtitleSize = 20.0
   @AppStorage("playerSubtitleDelay") private var subtitleDelay = 0.0
@@ -181,36 +181,34 @@ struct PlayerScreen: View {
         .allowsHitTesting(false)
       }
 
-      // The app-only Tools action stays clear of the native transport controls.
-      // AVPlayerViewController does not publish a supported controls-visible callback,
-      // so this lightweight overlay follows the same short inactivity timeout.
+      // Native-style, compact tools shortcut. Keep it at the same vertical
+      // level as the lower-right AVKit auxiliary control, above the scrubber.
       VStack {
         Spacer()
         HStack {
           if toolsVisible {
             Button {
               toolsVisibilityTask?.cancel()
+              toolsVisible = false
               showTools = true
             } label: {
-              Label("Tools", systemImage: "slider.horizontal.3")
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 13)
-                .padding(.vertical, 10)
-                .background(.black.opacity(0.68), in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.25)))
+              Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.white)
             .transition(.opacity)
             .accessibilityLabel("Video tools")
           }
           Spacer()
         }
         .padding(.leading, 16)
-        // Above the native scrubber / playback transport area.
-        .padding(.bottom, 145)
+        .padding(.bottom, 38)
       }
-      .animation(.easeInOut(duration: 0.22), value: toolsVisible)
+      .animation(.easeInOut(duration: 0.25), value: toolsVisible)
       .allowsHitTesting(toolsVisible)
 
       // Swipe down from the very top edge to exit full-screen playback.
@@ -245,7 +243,9 @@ struct PlayerScreen: View {
     toolsVisibilityTask?.cancel()
     toolsVisible = true
     toolsVisibilityTask = Task { @MainActor in
-      try? await Task.sleep(nanoseconds: 4_000_000_000)
+      do {
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+      } catch { return }
       guard !Task.isCancelled, !showTools else { return }
       toolsVisible = false
     }
