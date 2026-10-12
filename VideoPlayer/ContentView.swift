@@ -396,6 +396,9 @@ struct ContentView: View {
   @State private var isImportingVideo = false
   @State private var importError: String?
   @State private var downloadLink = ""
+  @AppStorage("recentDownloadLinks") private var recentDownloadLinks = ""
+  @State private var downloadFilter = 0
+  @State private var downloadSearch = ""
   @State private var isDownloading = false
   @State private var downloadMessage: String?
   @State private var generatedAudioURL: URL?
@@ -707,42 +710,101 @@ struct ContentView: View {
 
   private var downloadView: some View {
     Form {
-      Section("Video Link") {
-        TextField("https://example.com/video.mp4", text: $downloadLink)
+      Section {
+        HStack(spacing: 12) {
+          Image(systemName: "arrow.down.circle.fill")
+            .font(.largeTitle).foregroundStyle(accent)
+          VStack(alignment: .leading, spacing: 3) {
+            Text("Downloads Hub").font(.headline)
+            Text("Save direct media links and manage downloaded files")
+              .font(.caption).foregroundStyle(.secondary)
+          }
+        }.padding(.vertical, 6)
+      }
+      Section("New Download") {
+        TextField("Paste a video or media URL", text: $downloadLink)
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
           .keyboardType(.URL)
-
-        Button {
-          startDownload()
-        } label: {
-          Label(isDownloading ? "Downloading…" : "Download Video", systemImage: "arrow.down.circle.fill")
+        HStack {
+          Button {
+            startDownload()
+          } label: {
+            Label(isDownloading ? "Downloading…" : "Video", systemImage: "film")
+          }
+          .disabled(isDownloading || isConvertingAudio || downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          Spacer()
+          Button {
+            startMP3Download()
+          } label: {
+            Label(isConvertingAudio ? "Converting…" : "MP3", systemImage: "waveform")
+          }
+          .disabled(isDownloading || isConvertingAudio || downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .disabled(isDownloading || isConvertingAudio || downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-        Button {
-          startMP3Download()
-        } label: {
-          Label(isConvertingAudio ? "Converting…" : "Download / Convert to MP3", systemImage: "waveform.circle.fill")
+        if isDownloading || isConvertingAudio {
+          ProgressView()
+          Text("Please keep the app open until the transfer completes.")
+            .font(.caption).foregroundStyle(.secondary)
         }
-        .disabled(isDownloading || isConvertingAudio || downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
         if let generatedAudioURL {
           ShareLink(item: generatedAudioURL) {
             Label("Share Last MP3", systemImage: "square.and.arrow.up")
           }
-          Text(generatedAudioURL.lastPathComponent)
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
       }
-
+      if !recentDownloadLinks.isEmpty {
+        Section("Recent Links") {
+          ForEach(recentDownloadLinks.components(separatedBy: "\n").filter { !$0.isEmpty }, id: \.self) { link in
+            Button {
+              downloadLink = link
+            } label: {
+              Label(link, systemImage: "clock.arrow.circlepath")
+                .lineLimit(1)
+            }
+          }
+          Button("Clear Recent Links", role: .destructive) { recentDownloadLinks = "" }
+        }
+      }
+      Section("Downloaded Videos") {
+        TextField("Search saved videos", text: $downloadSearch)
+        Picker("View", selection: $downloadFilter) {
+          Text("All").tag(0)
+          Text("Newest").tag(1)
+          Text("Name").tag(2)
+        }.pickerStyle(.segmented)
+        let matching = library.items.filter { downloadSearch.isEmpty || $0.fileName.localizedCaseInsensitiveContains(downloadSearch) }
+        let ordered = downloadFilter == 2
+          ? matching.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+          : matching.sorted { $0.addedAt > $1.addedAt }
+        if ordered.isEmpty {
+          Label("No matching videos", systemImage: "film.stack").foregroundStyle(.secondary)
+        } else {
+          ForEach(ordered) { item in
+            HStack {
+              Image(systemName: "film").foregroundStyle(accent)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(item.fileName).lineLimit(1)
+                Text(item.addedAt, style: .date).font(.caption).foregroundStyle(.secondary)
+              }
+              Spacer()
+              Button { selected = item } label: { Image(systemName: "play.circle") }
+                .buttonStyle(.borderless)
+              ShareLink(item: library.url(for: item)) { Image(systemName: "square.and.arrow.up") }
+            }
+          }
+        }
+      }
       Section("Supported Links") {
-        Text("Paste a direct video link or a webpage that exposes a downloadable video through standard HTML video metadata. MP4, MOV, M4V, MKV and WebM links are supported. DRM/protected streaming pages are not supported.")
-          .font(.footnote)
-          .foregroundStyle(.secondary)
+        Text("Direct MP4, MOV, M4V and supported downloadable media links work best. DRM-protected streams and websites without exposed media files are not supported.")
+          .font(.footnote).foregroundStyle(.secondary)
       }
     }
+  }
+
+  private func rememberDownloadLink(_ link: String) {
+    var links = recentDownloadLinks.components(separatedBy: "\n").filter { !$0.isEmpty && $0 != link }
+    links.insert(link, at: 0)
+    recentDownloadLinks = links.prefix(8).joined(separator: "\n")
   }
 
   private func startDownload() {
@@ -755,6 +817,7 @@ struct ContentView: View {
     Task {
       do {
         try await library.downloadVideo(from: remoteURL)
+        rememberDownloadLink(text)
         downloadLink = ""
         downloadMessage = "Video downloaded and added to your library."
         tab = .recent
@@ -791,6 +854,7 @@ struct ContentView: View {
     Task {
       do {
         let output = try await library.downloadMP3(from: remoteURL)
+        rememberDownloadLink(text)
         generatedAudioURL = output
         downloadLink = ""
         downloadMessage = "MP3 created: \(output.lastPathComponent)"

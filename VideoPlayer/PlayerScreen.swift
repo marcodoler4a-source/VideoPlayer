@@ -30,15 +30,29 @@ struct SystemPlayerView: UIViewControllerRepresentable {
     )
     pinch.cancelsTouchesInView = false
     pinch.delegate = context.coordinator
-    // Pinch scaling is disabled in native mode so Apple controls retain their normal size.
+    container.view.addGestureRecognizer(pinch)
 
     let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
     tap.cancelsTouchesInView = false
     tap.delegate = context.coordinator
     container.view.addGestureRecognizer(tap)
 
+    let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+    doubleTap.numberOfTapsRequired = 2
+    doubleTap.cancelsTouchesInView = false
+    doubleTap.delegate = context.coordinator
+    container.view.addGestureRecognizer(doubleTap)
+    tap.require(toFail: doubleTap)
+
+    let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
+    pan.minimumNumberOfTouches = 2
+    pan.maximumNumberOfTouches = 2
+    pan.cancelsTouchesInView = false
+    pan.delegate = context.coordinator
+    container.view.addGestureRecognizer(pan)
+
     context.coordinator.container = container
-    container.videoScale = 1
+    container.videoScale = videoScale
     return container
   }
 
@@ -50,7 +64,7 @@ struct SystemPlayerView: UIViewControllerRepresentable {
     container.playerController.videoGravity = fillVideo ? .resizeAspectFill : .resizeAspect
     context.coordinator.container = container
     context.coordinator.onVideoTap = onVideoTap
-    container.videoScale = 1
+    container.videoScale = videoScale
     container.updatePlayerFrame()
   }
 
@@ -58,6 +72,7 @@ struct SystemPlayerView: UIViewControllerRepresentable {
     @Binding var videoScale: CGFloat
     weak var container: PlayerContainerController?
     private var scaleAtPinchStart: CGFloat = 1
+    private var panStart: CGPoint = .zero
     var onVideoTap: () -> Void
 
     init(videoScale: Binding<CGFloat>, onVideoTap: @escaping () -> Void) {
@@ -78,11 +93,32 @@ struct SystemPlayerView: UIViewControllerRepresentable {
         let proposed = scaleAtPinchStart * recognizer.scale
         // Resize the player viewport instead of applying a transform. This keeps
         // Apple's native buttons at their normal size while the video area changes.
-        videoScale = min(max(proposed, 0.65), 1.75)
+        videoScale = min(max(proposed, 1), 3)
         container?.videoScale = videoScale
         container?.updatePlayerFrame()
       default:
         break
+      }
+    }
+
+    @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+      guard recognizer.state == .ended else { return }
+      videoScale = videoScale > 1.05 ? 1 : 2
+      container?.videoScale = videoScale
+      if videoScale == 1 { container?.videoOffset = .zero }
+      container?.updatePlayerFrame()
+      onVideoTap()
+    }
+
+    @objc func handlePan(_ recognizer: UIPanGestureRecognizer) {
+      guard let container = container, videoScale > 1 else { return }
+      switch recognizer.state {
+      case .began: panStart = container.videoOffset
+      case .changed, .ended:
+        let delta = recognizer.translation(in: container.view)
+        container.videoOffset = CGPoint(x: panStart.x + delta.x, y: panStart.y + delta.y)
+        container.updatePlayerFrame()
+      default: break
       }
     }
 
@@ -98,6 +134,7 @@ struct SystemPlayerView: UIViewControllerRepresentable {
 final class PlayerContainerController: UIViewController {
   let playerController = AVPlayerViewController()
   var videoScale: CGFloat = 1
+  var videoOffset: CGPoint = .zero
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -121,7 +158,12 @@ final class PlayerContainerController: UIViewController {
     let height = bounds.height * videoScale
     playerController.view.transform = .identity
     playerController.view.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-    playerController.view.center = CGPoint(x: bounds.midX, y: bounds.midY)
+    let maxX = max(0, (width - bounds.width) / 2)
+    let maxY = max(0, (height - bounds.height) / 2)
+    videoOffset.x = min(max(videoOffset.x, -maxX), maxX)
+    videoOffset.y = min(max(videoOffset.y, -maxY), maxY)
+    if videoScale <= 1 { videoOffset = .zero }
+    playerController.view.center = CGPoint(x: bounds.midX + videoOffset.x, y: bounds.midY + videoOffset.y)
     playerController.view.clipsToBounds = true
   }
 }
@@ -279,16 +321,31 @@ struct PlayerScreen: View {
           }
           Slider(value: $subtitleDelay, in: -5...5, step: 0.1)
         }
-        Section("Video Display") {
-          Picker("Video Fit", selection: $fillVideo) {
-            Text("Fit").tag(false)
-            Text("Fill").tag(true)
+        Section("Display & Zoom") {
+          Picker("Video Framing", selection: $fillVideo) {
+            Text("Fit Entire Video").tag(false)
+            Text("Fill Screen").tag(true)
           }
-          Button("Reset Pinch Zoom") { videoScale = 1 }
-          Button("Rotate Screen") { rotateVideo() }
+          .pickerStyle(.segmented)
+          HStack {
+            Label("Zoom", systemImage: "plus.magnifyingglass")
+            Spacer()
+            Text(String(format: "%.1f×", Double(videoScale))).monospacedDigit().foregroundStyle(.secondary)
+          }
+          Slider(value: $videoScale, in: 1...3, step: 0.1)
+          Button { videoScale = 1 } label: {
+            Label("Reset Zoom to 1×", systemImage: "arrow.counterclockwise")
+          }
+          Text("Pinch with two fingers to zoom, drag with two fingers to pan, or double-tap to toggle zoom. Zoom adjusts the player viewport; native iPhone controls may also be affected.")
+            .font(.footnote).foregroundStyle(.secondary)
+          Button { rotateVideo() } label: { Label("Rotate Screen", systemImage: "rotate.right") }
         }
-        Section("Editing") {
-          Button("Open Video Editor") { showTools = false; showEditor = true }
+        Section("Video Editing") {
+          Button { showTools = false; showEditor = true } label: {
+            Label("Open Video Editor", systemImage: "slider.horizontal.3")
+          }
+          Text("Trim, crop, apply filters, add text, or erase embedded text. Review the edit before replacing the original file.")
+            .font(.footnote).foregroundStyle(.secondary)
         }
         Section {
           Text("Playback, scrubbing, speed and Picture in Picture are managed by the iPhone's built-in video player controls.")
@@ -397,9 +454,15 @@ struct VideoEditorView: View {
   @State private var duration: Double = 1
   @State private var trimStart: Double = 0
   @State private var trimEnd: Double = 1
+  @State private var editorSection = 0
   @State private var crop: CropPreset = .original
   @State private var filter: FilterPreset = .none
   @State private var overlayText = ""
+  @State private var overlayEmoji = ""
+  @State private var overlayPosition = 0.5
+  @State private var overlaySize = 36.0
+  @State private var overlayColor = 0
+  @State private var filterIntensity = 1.0
   @State private var exporting = false
   @State private var exportURL: URL?
   @State private var errorMessage: String?
@@ -426,15 +489,41 @@ struct VideoEditorView: View {
           VideoPlayer(player: player).frame(height: 220).listRowInsets(EdgeInsets())
         }
         Section("Trim") {
+          Text("Select a start and end point. Use the step buttons for precise adjustments.")
+            .font(.caption).foregroundStyle(.secondary)
           HStack {
             Text("Start")
             Slider(value: $trimStart, in: 0...max(trimEnd - 0.1, 0.1))
             Text(time(trimStart)).monospacedDigit()
           }
           HStack {
+            Button { trimStart = max(0, trimStart - 0.1) } label: { Image(systemName: "minus.circle") }
+            Spacer()
+            Text("Start ±0.1s").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button { trimStart = min(trimEnd - 0.1, trimStart + 0.1) } label: { Image(systemName: "plus.circle") }
+          }
+          .buttonStyle(.borderless)
+          HStack {
             Text("End")
             Slider(value: $trimEnd, in: min(trimStart + 0.1, duration)...max(duration, 1))
             Text(time(trimEnd)).monospacedDigit()
+          }
+          HStack {
+            Button { trimEnd = max(trimStart + 0.1, trimEnd - 0.1) } label: { Image(systemName: "minus.circle") }
+            Spacer()
+            Text("End ±0.1s").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button { trimEnd = min(duration, trimEnd + 0.1) } label: { Image(systemName: "plus.circle") }
+          }
+          .buttonStyle(.borderless)
+          HStack {
+            Label("Selected duration", systemImage: "clock")
+            Spacer()
+            Text(time(max(0, trimEnd - trimStart))).monospacedDigit().foregroundStyle(.secondary)
+          }
+          Button { player.seek(to: CMTime(seconds: trimStart, preferredTimescale: 600)); player.pause() } label: {
+            Label("Preview from Trim Start", systemImage: "play.rectangle")
           }
         }
         Section("Crop") {
@@ -442,13 +531,57 @@ struct VideoEditorView: View {
             ForEach(CropPreset.allCases) { Text($0.rawValue).tag($0) }
           }
         }
-        Section("Filter") {
-          Picker("Filter", selection: $filter) {
+        Section("Filters & Color") {
+          Picker("Look", selection: $filter) {
             ForEach(FilterPreset.allCases) { Text($0.rawValue).tag($0) }
           }
+          .pickerStyle(.menu)
+          if filter != .none {
+            HStack {
+              Text("Strength")
+              Slider(value: $filterIntensity, in: 0...1)
+              Text("\(Int(filterIntensity * 100))%")
+                .monospacedDigit().frame(width: 45)
+            }
+          }
+          Text("Filters are applied to the exported video. Original leaves colors unchanged.")
+            .font(.caption).foregroundStyle(.secondary)
         }
-        Section("Text") {
+        Section("Stickers & Emoji") {
+          TextField("Paste or type emoji stickers", text: $overlayEmoji)
+          HStack(spacing: 16) {
+            ForEach(["❤️", "😂", "🔥", "✨", "🎉", "😍"], id: \.self) { emoji in
+              Button(emoji) { overlayEmoji += emoji }
+                .buttonStyle(.borderless)
+            }
+          }
+          Text("Choose one or more emoji to overlay on the video.")
+            .font(.caption).foregroundStyle(.secondary)
+          if !overlayEmoji.isEmpty {
+            Button("Remove Stickers", role: .destructive) { overlayEmoji = "" }
+          }
+        }
+        Section("Text & Overlay Position") {
           TextField("Add text to video", text: $overlayText)
+          if !overlayText.isEmpty || !overlayEmoji.isEmpty {
+            HStack {
+              Text("Overlay size")
+              Slider(value: $overlaySize, in: 20...90)
+              Text("\(Int(overlaySize))").monospacedDigit()
+            }
+            Picker("Text color", selection: $overlayColor) {
+              Text("White").tag(0)
+              Text("Yellow").tag(1)
+              Text("Cyan").tag(2)
+              Text("Black").tag(3)
+            }
+            HStack {
+              Text("Vertical position")
+              Slider(value: $overlayPosition, in: 0.1...0.9)
+            }
+            Text("Text and emoji are included in the exported video.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
           if !overlayText.isEmpty {
             Button(role: .destructive) {
               overlayText = ""
@@ -565,7 +698,9 @@ struct VideoEditorView: View {
             }
           }
         }
-        Section {
+        Section("Export & Save") {
+          Text("Review the preview and selected trim range before saving. Replacing the original cannot be undone.")
+            .font(.footnote).foregroundStyle(.secondary)
           Button {
             confirmReplace = true
           } label: {
@@ -694,6 +829,7 @@ struct VideoEditorView: View {
         var videoComposition: AVVideoComposition?
         if filter != .none || crop != .original
           || !overlayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          || !overlayEmoji.isEmpty
           || (eraseEnabled && !eraseTextRegions.isEmpty)
         {
           let base = AVVideoComposition(asset: composition) { request in
@@ -701,7 +837,16 @@ struct VideoEditorView: View {
             if eraseEnabled && !eraseTextRegions.isEmpty {
               image = eraseEmbeddedText(in: image, regions: eraseTextRegions)
             }
-            image = filter.apply(to: image)
+            if filterIntensity > 0 {
+              let filtered = filter.apply(to: image)
+              if filterIntensity >= 0.999 { image = filtered }
+              else {
+                image = filtered.applyingFilter("CIDissolveTransition", parameters: [
+                  kCIInputTargetImageKey: image,
+                  kCIInputTimeKey: 1 - filterIntensity
+                ])
+              }
+            }
             if crop != .original {
               let rect = crop.rect(in: image.extent)
               image = image.cropped(to: rect).transformed(
@@ -709,7 +854,7 @@ struct VideoEditorView: View {
             }
             request.finish(with: image.cropped(to: image.extent), context: nil)
           }
-          if !overlayText.isEmpty {
+          if !overlayText.isEmpty || !overlayEmoji.isEmpty {
             guard let mutableBase = base.mutableCopy() as? AVMutableVideoComposition else {
               throw NSError(
                 domain: "VideoEditor",
@@ -720,22 +865,21 @@ struct VideoEditorView: View {
 
             let parent = CALayer()
             let videoLayer = CALayer()
-            let textLayer = CATextLayer()
             parent.frame = CGRect(origin: .zero, size: mutableBase.renderSize)
             videoLayer.frame = parent.frame
-            textLayer.string = overlayText
-            textLayer.foregroundColor = UIColor.white.cgColor
-            textLayer.backgroundColor = UIColor.black.withAlphaComponent(0.45).cgColor
-            textLayer.alignmentMode = .center
-            textLayer.fontSize = 36
-            textLayer.contentsScale = UIScreen.main.scale
-            textLayer.frame = CGRect(
-              x: 30,
-              y: 40,
-              width: max(mutableBase.renderSize.width - 60, 100),
-              height: 60
-            )
             parent.addSublayer(videoLayer)
+            let label = [overlayText, overlayEmoji].filter { !$0.isEmpty }.joined(separator: "  ")
+            let textLayer = CATextLayer()
+            textLayer.string = label
+            textLayer.foregroundColor = [UIColor.white, .yellow, .cyan, .black][min(max(overlayColor, 0), 3)].cgColor
+            textLayer.backgroundColor = UIColor.black.withAlphaComponent(0.25).cgColor
+            textLayer.alignmentMode = .center
+            textLayer.wrapped = true
+            textLayer.fontSize = CGFloat(overlaySize)
+            textLayer.contentsScale = UIScreen.main.scale
+            textLayer.frame = CGRect(x: 20,
+              y: mutableBase.renderSize.height * CGFloat(overlayPosition) - 65,
+              width: max(mutableBase.renderSize.width - 40, 100), height: 130)
             parent.addSublayer(textLayer)
             mutableBase.animationTool = AVVideoCompositionCoreAnimationTool(
               postProcessingAsVideoLayer: videoLayer,
